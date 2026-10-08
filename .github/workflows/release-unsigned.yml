@@ -1,7 +1,7 @@
 name: Release (unsigned, fork)
 
 # 上游 Release 工作流依赖仓库级 Tauri/Apple 签名密钥。本 fork 未配置这些 secrets，
-# 用这个仅手动触发的工作流构建 Windows/Linux 安装包并发布 GitHub 正式 Release。
+# 用这个仅手动触发的工作流构建 Windows/Linux/macOS 安装包并发布 GitHub 正式 Release。
 on:
   workflow_dispatch:
     inputs:
@@ -30,6 +30,11 @@ jobs:
           - name: Linux x64
             os: ubuntu-22.04
             bundles: appimage,deb,rpm
+          - name: macOS Universal
+            os: macos-14
+            bundles: dmg
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri_target: universal-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
@@ -56,6 +61,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -96,9 +102,16 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build unsigned Tauri bundles
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           pnpm tauri build --bundles "${{ matrix.bundles }}" --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Build unsigned macOS universal DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          pnpm tauri build --target "${{ matrix.tauri_target }}" --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Collect Windows assets
         if: runner.os == 'Windows'
@@ -116,6 +129,14 @@ jobs:
           mkdir -p release-assets
           find src-tauri/target/release/bundle -type f \
             \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+            -exec cp {} release-assets/ \;
+
+      - name: Collect macOS assets
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find src-tauri/target/universal-apple-darwin/release/bundle/dmg -type f -name '*.dmg' \
             -exec cp {} release-assets/ \;
 
       - name: Upload release assets
@@ -153,5 +174,6 @@ jobs:
             这些安装包未签名；安装时系统可能显示安全提示。
 
             ### Downloads
-            Windows MSI 和 Linux AppImage / deb / rpm 见下方 Assets。
+            Windows MSI、Linux AppImage / deb / rpm 和 macOS Universal DMG 见下方 Assets。
+            macOS 包为未签名/ad-hoc 构建，首次打开可能需要右键选择“打开”。
           files: release-assets/*
