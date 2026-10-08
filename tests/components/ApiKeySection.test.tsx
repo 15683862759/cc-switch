@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiKeySection } from "@/components/providers/forms/shared/ApiKeySection";
 
@@ -47,5 +47,75 @@ describe("ApiKeySection", () => {
     const { container } = renderSection({ partnerPromotionKey: undefined });
 
     expect(container.querySelector("p")).toBeNull();
+  });
+
+  it("renders one input per key and shows weight fields only in weighted mode", () => {
+    const { container, rerender } = render(
+      <ApiKeySection
+        value=""
+        onChange={() => {}}
+        category="third_party"
+        shouldShowLink={false}
+        websiteUrl=""
+        apiKeys={[
+          { key: "sk-a", weight: 1 },
+          { key: "sk-b", weight: 2 },
+        ]}
+        apiKeyStrategy="round_robin"
+        onApiKeysChange={() => {}}
+        onApiKeyStrategyChange={() => {}}
+      />,
+    );
+
+    expect(container.querySelectorAll('input[type="password"]')).toHaveLength(
+      2,
+    );
+    expect(container.querySelectorAll('input[type="number"]')).toHaveLength(0);
+
+    rerender(
+      <ApiKeySection
+        value=""
+        onChange={() => {}}
+        category="third_party"
+        shouldShowLink={false}
+        websiteUrl=""
+        apiKeys={[
+          { key: "sk-a", weight: 1 },
+          { key: "sk-b", weight: 2 },
+        ]}
+        apiKeyStrategy="weighted"
+        onApiKeysChange={() => {}}
+        onApiKeyStrategyChange={() => {}}
+      />,
+    );
+
+    expect(container.querySelectorAll('input[type="number"]')).toHaveLength(2);
+  });
+
+  it("formats a pasted list into separate key rows", () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <ApiKeySection
+        value=""
+        onChange={() => {}}
+        category="third_party"
+        shouldShowLink={false}
+        websiteUrl=""
+        apiKeys={[{ key: "", weight: 1 }]}
+        apiKeyStrategy="round_robin"
+        onApiKeysChange={onChange}
+        onApiKeyStrategyChange={() => {}}
+      />,
+    );
+
+    fireEvent.paste(container.querySelector('input[type="password"]')!, {
+      clipboardData: { getData: () => "sk-a\nsk-b\nsk-c" },
+    });
+
+    expect(onChange).toHaveBeenCalledWith([
+      { key: "sk-a", weight: 1 },
+      { key: "sk-b", weight: 1 },
+      { key: "sk-c", weight: 1 },
+    ]);
   });
 });

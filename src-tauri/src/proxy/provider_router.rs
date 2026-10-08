@@ -5,11 +5,12 @@
 use crate::app_config::AppType;
 use crate::database::Database;
 use crate::error::AppError;
-use crate::provider::Provider;
+use crate::provider::{ApiKeyStrategy, Provider};
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 /// Codex Official requests carry the selected account's native Authorization
@@ -20,12 +21,20 @@ pub(crate) fn provider_supports_failover(app_type: &str, provider: &Provider) ->
         || !crate::proxy::providers::is_codex_official_provider(provider)
 }
 
+fn stable_key_hash(value: &str) -> u64 {
+    value.bytes().fold(1469598103934665603, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(1099511628211)
+    })
+}
+
 /// 供应商路由器
 pub struct ProviderRouter {
     /// 数据库连接
     db: Arc<Database>,
     /// 熔断器管理器 - key 格式: "app_type:provider_id"
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
+    /// Key 池轮询游标 - key 格式: "app_type:provider_id"
+    key_cursors: Arc<RwLock<HashMap<String, usize>>>,
 }
 
 impl ProviderRouter {
@@ -34,6 +43,7 @@ impl ProviderRouter {
         Self {
             db,
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+            key_cursors: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -293,6 +303,54 @@ impl ProviderRouter {
         breakers.insert(key.to_string(), breaker.clone());
 
         breaker
+    }
+
+    /// 在注入上游认证头前选择一个供应商 Key。
+    ///
+    /// 轮询游标按供应商独立保存；随机/权重模式使用请求序列和时间组成种子。
+    /// Key 池为空时回退到 settings_config 解析出的单 Key。
+    pub async fn select_api_key(
+        &self,
+        app_type: &str,
+        provider: &Provider,
+        fallback: &str,
+    ) -> String {
+        let Some(meta) = provider.meta.as_ref() else {
+            return fallback.to_string();
+        };
+        if meta
+            .api_keys
+            .iter()
+            .all(|entry| entry.key.trim().is_empty())
+        {
+            return fallback.to_string();
+        }
+
+        let cursor_key = format!("{app_type}:{}", provider.id);
+        let mut cursors = self.key_cursors.write().await;
+        let cursor = cursors.entry(cursor_key).or_insert(0);
+        let request_seq = *cursor as u64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        let seed =
+            now.rotate_left(13) ^ request_seq.rotate_left(37) ^ stable_key_hash(&provider.id);
+
+        let selected = crate::proxy::key_pool::select_api_key(
+            &meta.api_keys,
+            meta.api_key_strategy,
+            fallback,
+            cursor,
+            seed,
+        );
+        if !matches!(
+            meta.api_key_strategy.unwrap_or(ApiKeyStrategy::RoundRobin),
+            ApiKeyStrategy::RoundRobin
+        ) {
+            *cursor = cursor.wrapping_add(1);
+        }
+        selected
     }
 }
 

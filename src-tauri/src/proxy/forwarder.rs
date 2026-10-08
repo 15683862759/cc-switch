@@ -2042,6 +2042,21 @@ impl RequestForwarder {
         // 精确认证材料。实际日志永远不输出这些值。
         let mut log_secrets: Vec<String> = Vec::new();
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
+            // 普通 API Key 供应商可在本地路由/聚合模式下按 Key 池策略选 Key。
+            // 托管 OAuth / Copilot 使用动态 token，不参与 Key 池轮换。
+            if !matches!(
+                auth.strategy,
+                AuthStrategy::GitHubCopilot
+                    | AuthStrategy::CodexOAuth
+                    | AuthStrategy::XaiOAuth
+                    | AuthStrategy::GoogleOAuth
+            ) {
+                auth.api_key = self
+                    .router
+                    .select_api_key(app_type.as_str(), provider, &auth.api_key)
+                    .await;
+            }
+
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
             if auth.strategy == AuthStrategy::GitHubCopilot {
                 if let Some(app_handle) = &self.app_handle {

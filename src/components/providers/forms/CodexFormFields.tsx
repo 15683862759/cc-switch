@@ -70,6 +70,8 @@ import {
   metadataFilledAnything,
 } from "./modelMetadataFill";
 import type {
+  ApiKeyEntry,
+  ApiKeyStrategy,
   ClaudeApiKeyField,
   CodexApiFormat,
   CodexCopilotApiFormat,
@@ -129,6 +131,10 @@ interface CodexFormFieldsProps {
   // API Key
   codexApiKey: string;
   onApiKeyChange: (key: string) => void;
+  apiKeys?: ApiKeyEntry[];
+  apiKeyStrategy?: ApiKeyStrategy;
+  onApiKeysChange?: (entries: ApiKeyEntry[]) => void;
+  onApiKeyStrategyChange?: (strategy: ApiKeyStrategy) => void;
   category?: ProviderCategory;
   shouldShowApiKeyLink: boolean;
   websiteUrl: string;
@@ -484,6 +490,10 @@ export function CodexFormFields({
   onXaiAccountSelect,
   codexApiKey,
   onApiKeyChange,
+  apiKeys,
+  apiKeyStrategy,
+  onApiKeysChange,
+  onApiKeyStrategyChange,
   category,
   shouldShowApiKeyLink,
   websiteUrl,
@@ -1571,6 +1581,10 @@ export function CodexFormFields({
           label="API Key"
           value={codexApiKey}
           onChange={onApiKeyChange}
+          apiKeys={apiKeys}
+          apiKeyStrategy={apiKeyStrategy}
+          onApiKeysChange={onApiKeysChange}
+          onApiKeyStrategyChange={onApiKeyStrategyChange}
           category={category}
           required
           shouldShowLink={shouldShowApiKeyLink}

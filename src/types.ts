@@ -166,6 +166,13 @@ export interface CodexChatReasoning {
 
 export type PromptCacheRoutingMode = "auto" | "enabled" | "disabled";
 
+export type ApiKeyStrategy = "random" | "round_robin" | "weighted";
+
+export interface ApiKeyEntry {
+  key: string;
+  weight?: number;
+}
+
 export interface LocalProxyRequestOverrides {
   headers?: Record<string, string>;
   body?: Record<string, unknown>;
@@ -205,6 +212,10 @@ export interface ProviderMeta {
   authBinding?: AuthBinding;
   // Claude 认证字段名
   apiKeyField?: ClaudeApiKeyField;
+  // 供应商 Key 池；单 Key 会迁移为仅含一个条目的池
+  apiKeys?: ApiKeyEntry[];
+  // Key 池调度策略：随机 / 轮询 / 权重
+  apiKeyStrategy?: ApiKeyStrategy;
   // 是否将 base_url 视为完整 API 端点（代理直接使用此 URL，不拼接路径）
   isFullUrl?: boolean;
   // Prompt cache key for OpenAI Responses-compatible endpoints (improves cache hit rate)

@@ -61,7 +61,18 @@
   "apiKeyInput": {
     "placeholder": "請輸入 API Key",
     "show": "顯示 API Key",
-    "hide": "隱藏 API Key"
+    "hide": "隱藏 API Key",
+    "nextKeyPlaceholder": "繼續輸入或貼上 API Key",
+    "multiHint": "按 Enter 換行，每行一個 API Key；貼上多個 Key 會自動拆分。",
+    "addKey": "新增 Key",
+    "removeKey": "刪除此 Key",
+    "weightLabel": "Key 權重",
+    "weightHint": "權重留空或小於 1 時以 1 處理。",
+    "strategy": "Key 調度策略",
+    "strategyRouteHint": "隨機、輪詢、權重僅在本地路由/聚合模式生效",
+    "strategyRandom": "隨機",
+    "strategyRoundRobin": "輪詢",
+    "strategyWeighted": "權重"
   },
   "jsonEditor": {
     "mustBeObject": "設定必須是 JSON 物件，不能是陣列或其他類型",
@@ -270,6 +281,8 @@
   },
   "notifications": {
     "providerAdded": "供應商已新增",
+    "multiKeyRoutingEnabled": "偵測到多個 API Key，已自動開啟本機路由",
+    "multiKeyRoutingFailed": "多個 Key 已儲存，但自動開啟本機路由失敗：{{error}}",
     "providerSaved": "供應商設定已儲存",
     "providerDeleted": "供應商刪除成功",
     "switchSuccess": "切換成功！",
@@ -306,6 +319,7 @@
     "proxyReasonFullUrl": "開啟了完整 URL 連線模式",
     "proxyReasonManagedOAuth": "使用託管 OAuth 登入（權杖由本機路由注入）",
     "proxyReasonRoutingRequired": "需要本機路由處理請求",
+    "proxyReasonMultipleKeys": "設定了多個 API Key，需要本機路由依策略選擇 Key",
     "openAIFormatHint": "此供應商使用 OpenAI 相容格式，需要開啟路由服務才能正常使用",
     "copilotProxyHint": "GitHub Copilot 作為 Claude 供應商時始終需要本地路由；路由會根據目前模型自動選擇 Chat Completions 或 Responses。",
     "openLinkFailed": "連結開啟失敗",

@@ -27,6 +27,7 @@ import {
 } from "@/lib/query/failover";
 import { useModeActions } from "@/hooks/useModeActions";
 import { getRoutingReason } from "@/utils/routingReason";
+import { providerHasMultipleApiKeys } from "@/utils/providerCapabilities";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
@@ -136,6 +137,11 @@ export function SwitchModePanel({
     if (!needsRouteRequest) return;
     const provider = providers[needsRouteRequest.providerId];
     if (!provider) return;
+    if (providerHasMultipleApiKeys(provider)) {
+      onSwitch(provider);
+      onNeedsRouteHandled?.();
+      return;
+    }
     setDialog({
       kind: "needsRoute",
       providerId: provider.id,

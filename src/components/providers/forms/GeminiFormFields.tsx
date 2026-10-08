@@ -11,7 +11,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
-import type { ProviderCategory } from "@/types";
+import type { ApiKeyEntry, ApiKeyStrategy, ProviderCategory } from "@/types";
 
 interface EndpointCandidate {
   url: string;
@@ -23,6 +23,10 @@ interface GeminiFormFieldsProps {
   shouldShowApiKey: boolean;
   apiKey: string;
   onApiKeyChange: (key: string) => void;
+  apiKeys?: ApiKeyEntry[];
+  apiKeyStrategy?: ApiKeyStrategy;
+  onApiKeysChange?: (entries: ApiKeyEntry[]) => void;
+  onApiKeyStrategyChange?: (strategy: ApiKeyStrategy) => void;
   category?: ProviderCategory;
   shouldShowApiKeyLink: boolean;
   websiteUrl: string;
@@ -53,6 +57,10 @@ export function GeminiFormFields({
   shouldShowApiKey,
   apiKey,
   onApiKeyChange,
+  apiKeys,
+  apiKeyStrategy,
+  onApiKeysChange,
+  onApiKeyStrategyChange,
   category,
   shouldShowApiKeyLink,
   websiteUrl,
@@ -136,6 +144,10 @@ export function GeminiFormFields({
         <ApiKeySection
           value={apiKey}
           onChange={onApiKeyChange}
+          apiKeys={apiKeys}
+          apiKeyStrategy={apiKeyStrategy}
+          onApiKeysChange={onApiKeysChange}
+          onApiKeyStrategyChange={onApiKeyStrategyChange}
           category={category}
           required
           shouldShowLink={shouldShowApiKeyLink}

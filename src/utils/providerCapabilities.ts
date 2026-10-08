@@ -109,6 +109,16 @@ export function supportsFailover(
   return !supportsOfficialProxyTakeover(appId, provider);
 }
 
+/** 供应商是否配置了多个有效 API Key。 */
+export function providerHasMultipleApiKeys(
+  provider: Pick<Provider, "meta"> | null | undefined,
+): boolean {
+  return (
+    (provider?.meta?.apiKeys?.filter((entry) => entry.key.trim() !== "")
+      .length ?? 0) > 1
+  );
+}
+
 /** Keep the UI capability rule aligned with the Rust takeover policy. */
 export function supportsOfficialProxyTakeover(
   appId: AppId,
@@ -135,7 +145,7 @@ export function supportsOfficialProxyTakeover(
  *
  * - Claude Desktop 的普通供应商按 direct/proxy 模式判定；托管 OAuth 没有
  *   direct 逃生口（后端同样拒绝），始终需要本地路由。
- * - claude / codex / grokbuild 的托管 OAuth 同样恒需路由；非 OAuth 则按
+ * - claude / codex / gemini / grokbuild 的托管 OAuth 同样恒需路由；非 OAuth 则按
  *   各自原生格式及完整 URL 模式判断是否需要本地处理。
  */
 export function providerNeedsRouting(
@@ -143,6 +153,16 @@ export function providerNeedsRouting(
   provider: Provider,
 ): boolean {
   if (isOfficialAccount(appId, provider)) return false;
+
+  if (
+    (appId === "claude" ||
+      appId === "codex" ||
+      appId === "gemini" ||
+      appId === "grokbuild") &&
+    providerHasMultipleApiKeys(provider)
+  ) {
+    return true;
+  }
 
   const isManagedOAuth = isOAuthProviderType(provider.meta?.providerType);
 

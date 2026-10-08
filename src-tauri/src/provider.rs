@@ -467,12 +467,41 @@ impl LocalProxyRequestOverrides {
     }
 }
 
+/// 单个 API Key 及其权重。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyEntry {
+    pub key: String,
+    #[serde(default = "default_api_key_weight")]
+    pub weight: u32,
+}
+
+fn default_api_key_weight() -> u32 {
+    1
+}
+
+/// 供应商 Key 池的调度策略。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyStrategy {
+    Random,
+    #[default]
+    RoundRobin,
+    Weighted,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,
+    /// 本地路由/聚合模式使用的 API Key 池。空表示沿用 settings_config 中的单 Key。
+    #[serde(rename = "apiKeys", default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<ApiKeyEntry>,
+    /// Key 池调度策略；未配置时按轮询处理，单 Key 供应商不受影响。
+    #[serde(rename = "apiKeyStrategy", skip_serializing_if = "Option::is_none")]
+    pub api_key_strategy: Option<ApiKeyStrategy>,
     /// 是否在写入 live 时应用通用配置片段
     #[serde(
         rename = "commonConfigEnabled",

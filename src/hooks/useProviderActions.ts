@@ -9,6 +9,7 @@ import {
   openclawApi,
   type AppId,
 } from "@/lib/api";
+import { proxyApi } from "@/lib/api/proxy";
 import type {
   Provider,
   UsageScript,
@@ -24,12 +25,23 @@ import {
   useDeleteProviderMutation,
   useSwitchProviderMutation,
 } from "@/lib/query";
+import { proxyKeys } from "@/lib/query/proxy";
 import { usageKeys } from "@/lib/query/usage";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
-import { supportsOfficialProxyTakeover } from "@/utils/providerCapabilities";
+import {
+  providerHasMultipleApiKeys,
+  supportsOfficialProxyTakeover,
+} from "@/utils/providerCapabilities";
 import { getRoutingReason } from "@/utils/routingReason";
 import { logFrontendInfo } from "@/lib/frontendLogger";
+
+const LOCAL_ROUTE_APPS = new Set<AppId>([
+  "claude",
+  "codex",
+  "gemini",
+  "grokbuild",
+]);
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -46,6 +58,58 @@ export function useProviderActions(
   const updateProviderMutation = useUpdateProviderMutation(activeApp);
   const deleteProviderMutation = useDeleteProviderMutation(activeApp);
   const switchProviderMutation = useSwitchProviderMutation(activeApp);
+
+  /**
+   * 多个 Key 必须经过本地代理才能调度。这里在保存或切换时自动进入路由模式，
+   * 并以当前供应商作为路由目标。
+   */
+  const activateMultiKeyRouting = useCallback(
+    async (provider: Provider, force = false): Promise<boolean> => {
+      if (
+        !LOCAL_ROUTE_APPS.has(activeApp) ||
+        !providerHasMultipleApiKeys(provider)
+      ) {
+        return false;
+      }
+
+      const mode = await proxyApi.getAppMode(activeApp);
+      const isDirect = mode.mode === "direct";
+      const alreadyCurrent = isDirect
+        ? mode.directProviderId === provider.id
+        : mode.routeProviderId === provider.id;
+      if (!force && !alreadyCurrent) return false;
+
+      if (isDirect) {
+        await proxyApi.setProxyTakeoverForApp(
+          activeApp,
+          true,
+          false,
+          provider.id,
+        );
+      } else if (!alreadyCurrent) {
+        await proxyApi.setProxyRoute(activeApp, provider.id);
+      } else {
+        return true;
+      }
+
+      await queryClient.invalidateQueries({
+        queryKey: ["providers", activeApp],
+      });
+      await queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      await queryClient.invalidateQueries({
+        queryKey: proxyKeys.takeoverStatus,
+      });
+      providersApi.updateTrayMenu().catch(() => undefined);
+      toast.success(
+        t("notifications.multiKeyRoutingEnabled", {
+          defaultValue: "检测到多个 API Key，已自动开启本地路由",
+        }),
+        { closeButton: true },
+      );
+      return true;
+    },
+    [activeApp, queryClient, t],
+  );
 
   // Claude 插件同步逻辑
   const syncClaudePlugin = useCallback(
@@ -87,7 +151,18 @@ export function useProviderActions(
       },
     ) => {
       const enhanced = injectCodingPlanUsageScript(activeApp, provider);
-      await addProviderMutation.mutateAsync(enhanced);
+      const createdProvider = await addProviderMutation.mutateAsync(enhanced);
+      try {
+        await activateMultiKeyRouting(createdProvider, true);
+      } catch (error) {
+        toast.warning(
+          t("notifications.multiKeyRoutingFailed", {
+            error: extractErrorMessage(error) || t("common.unknown"),
+            defaultValue: "多个 Key 已保存，但自动开启本地路由失败：{{error}}",
+          }),
+          { closeButton: true },
+        );
+      }
 
       // OpenClaw: register models to allowlist after adding provider
       if (activeApp === "openclaw" && provider.suggestedDefaults) {
@@ -135,7 +210,7 @@ export function useProviderActions(
         }
       }
     },
-    [addProviderMutation, activeApp, queryClient, t],
+    [activateMultiKeyRouting, addProviderMutation, activeApp, queryClient, t],
   );
 
   // 更新供应商
@@ -150,6 +225,17 @@ export function useProviderActions(
         originalId,
         editorSave,
       });
+      try {
+        await activateMultiKeyRouting(provider);
+      } catch (error) {
+        toast.warning(
+          t("notifications.multiKeyRoutingFailed", {
+            error: extractErrorMessage(error) || t("common.unknown"),
+            defaultValue: "多个 Key 已保存，但自动开启本地路由失败：{{error}}",
+          }),
+          { closeButton: true },
+        );
+      }
 
       // 更新托盘菜单（失败不影响主操作）
       try {
@@ -161,12 +247,30 @@ export function useProviderActions(
         );
       }
     },
-    [updateProviderMutation],
+    [activateMultiKeyRouting, updateProviderMutation, t],
   );
 
   // 切换供应商
   const switchProvider = useCallback(
     async (provider: Provider, options?: { acknowledgedRouting?: boolean }) => {
+      if (providerHasMultipleApiKeys(provider)) {
+        try {
+          if (await activateMultiKeyRouting(provider, true)) {
+            await syncClaudePlugin(provider);
+            return;
+          }
+        } catch (error) {
+          toast.error(
+            t("notifications.multiKeyRoutingFailed", {
+              error: extractErrorMessage(error) || t("common.unknown"),
+              defaultValue: "自动开启本地路由失败：{{error}}",
+            }),
+            { closeButton: true },
+          );
+          return;
+        }
+      }
+
       // Claude Desktop 切到模型映射卡时，后端会自动拉起路由服务，不用提醒；
       // 其余应用必须开启当前应用的 takeover（只看全局进程会漏判别的应用已接管的情况）。
       // 确认框 F 里选了「仍然直连切换」的不再重复提醒。
@@ -287,7 +391,14 @@ export function useProviderActions(
         // 错误提示由 mutation 处理
       }
     },
-    [switchProviderMutation, syncClaudePlugin, activeApp, isProxyTakeover, t],
+    [
+      activateMultiKeyRouting,
+      switchProviderMutation,
+      syncClaudePlugin,
+      activeApp,
+      isProxyTakeover,
+      t,
+    ],
   );
 
   // 删除供应商

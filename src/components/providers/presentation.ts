@@ -4,6 +4,7 @@ import type { AppId } from "@/lib/api";
 import type { AppMode } from "@/types/proxy";
 import {
   isOfficialAccount,
+  providerHasMultipleApiKeys,
   providerNeedsRouting,
   supportsFailover,
   supportsOfficialProxyTakeover,
@@ -239,7 +240,8 @@ function buildSwitchSectionsByView(input: SwitchModeInput): ProviderSection[] {
                     key: "switch",
                     label: t("providerCard.action.switch"),
                     onClick: () =>
-                      providerNeedsRouting(app, p)
+                      providerNeedsRouting(app, p) &&
+                      !providerHasMultipleApiKeys(p)
                         ? actions.needsRouteDialog(p)
                         : actions.switchDirect(p),
                   },

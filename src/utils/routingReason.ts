@@ -7,7 +7,10 @@ import {
   isCodexAnthropicWireApi,
   isCodexChatWireApi,
 } from "@/utils/providerConfigUtils";
-import { providerNeedsRouting } from "@/utils/providerCapabilities";
+import {
+  providerHasMultipleApiKeys,
+  providerNeedsRouting,
+} from "@/utils/providerCapabilities";
 
 /**
  * 这家为什么需要路由（「需要路由」徽标的说明、直连切换时的提示、对话框 F 的正文都用它）。
@@ -44,7 +47,11 @@ export function getRoutingReason(
   // Determine why this provider requires the proxy.
   let proxyRequiredReason: string | null = null;
   if (providerNeedsRouting(app, provider)) {
-    if (isCopilotProvider) {
+    if (providerHasMultipleApiKeys(provider)) {
+      proxyRequiredReason = t("notifications.proxyReasonMultipleKeys", {
+        defaultValue: "配置了多个 API Key，需要本地路由按策略选择 Key",
+      });
+    } else if (isCopilotProvider) {
       proxyRequiredReason = t("notifications.proxyReasonCopilot", {
         defaultValue: "使用 GitHub Copilot 作为 Claude 供应商",
       });

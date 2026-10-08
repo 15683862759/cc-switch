@@ -61,6 +61,9 @@ const settingsApiApplyMock = vi.fn();
 const openclawApiGetModelCatalogMock = vi.fn();
 const openclawApiGetDefaultModelMock = vi.fn();
 const openclawApiSetDefaultModelMock = vi.fn();
+const proxyGetAppModeMock = vi.fn();
+const proxySetTakeoverMock = vi.fn();
+const proxySetRouteMock = vi.fn();
 
 vi.mock("@/lib/api", () => ({
   piApi: {
@@ -84,6 +87,15 @@ vi.mock("@/lib/api", () => ({
       openclawApiGetDefaultModelMock(...args),
     setDefaultModel: (...args: unknown[]) =>
       openclawApiSetDefaultModelMock(...args),
+  },
+}));
+
+vi.mock("@/lib/api/proxy", () => ({
+  proxyApi: {
+    getAppMode: (...args: unknown[]) => proxyGetAppModeMock(...args),
+    setProxyTakeoverForApp: (...args: unknown[]) =>
+      proxySetTakeoverMock(...args),
+    setProxyRoute: (...args: unknown[]) => proxySetRouteMock(...args),
   },
 }));
 
@@ -124,6 +136,9 @@ beforeEach(() => {
   openclawApiGetModelCatalogMock.mockReset();
   openclawApiGetDefaultModelMock.mockReset();
   openclawApiSetDefaultModelMock.mockReset();
+  proxyGetAppModeMock.mockReset();
+  proxySetTakeoverMock.mockReset();
+  proxySetRouteMock.mockReset();
   toastSuccessMock.mockReset();
   toastErrorMock.mockReset();
   toastInfoMock.mockReset();
@@ -180,6 +195,47 @@ describe("useProviderActions", () => {
       originalId: undefined,
     });
     expect(providersApiUpdateTrayMenuMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto enables local routing when switching a provider with multiple keys", async () => {
+    proxyGetAppModeMock.mockResolvedValueOnce({
+      mode: "direct",
+      attached: false,
+      routeProviderId: null,
+      directProviderId: "provider-1",
+    });
+    proxySetTakeoverMock.mockResolvedValueOnce(undefined);
+    providersApiUpdateTrayMenuMock.mockResolvedValueOnce(true);
+    const { wrapper } = createWrapper();
+    const provider = createProvider({
+      category: "custom",
+      meta: {
+        apiKeys: [
+          { key: "sk-a", weight: 1 },
+          { key: "sk-b", weight: 1 },
+        ],
+      },
+    });
+
+    const { result } = renderHook(() => useProviderActions("claude"), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.switchProvider(provider);
+    });
+
+    expect(proxySetTakeoverMock).toHaveBeenCalledWith(
+      "claude",
+      true,
+      false,
+      provider.id,
+    );
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "检测到多个 API Key，已自动开启本地路由",
+      { closeButton: true },
+    );
   });
 
   it("should not request plugin sync when switching non-Claude provider", async () => {

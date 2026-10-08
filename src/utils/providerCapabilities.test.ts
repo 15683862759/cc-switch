@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import {
+  providerHasMultipleApiKeys,
   providerNeedsRouting,
   resolveCodexOfficialIdentity,
   supportsOfficialProxyTakeover,
@@ -14,6 +15,27 @@ function mkProvider(overrides: Partial<Provider> = {}): Provider {
 // wire_api 取自 config.toml；chat_completions 需转换（需路由），responses 直连。
 const codexConfig = (wireApi: "chat_completions" | "responses") =>
   `model_provider = "custom"\n\n[model_providers.custom]\nname = "X"\nbase_url = "https://x.example/v1"\nwire_api = "${wireApi}"\n`;
+
+describe("providerHasMultipleApiKeys", () => {
+  it("counts only non-empty keys", () => {
+    expect(
+      providerHasMultipleApiKeys(
+        mkProvider({
+          meta: {
+            apiKeys: [{ key: "sk-a" }, { key: "sk-b" }],
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      providerHasMultipleApiKeys(
+        mkProvider({
+          meta: { apiKeys: [{ key: "sk-a" }, { key: "   " }] },
+        }),
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("providerNeedsRouting", () => {
   it("allows explicit Codex Official cards during takeover", () => {
@@ -351,6 +373,20 @@ describe("providerNeedsRouting", () => {
         ),
       ).toBe(false);
     });
+  });
+
+  it("多个有效 Key 需要本地路由", () => {
+    expect(
+      providerNeedsRouting(
+        "claude",
+        mkProvider({
+          meta: {
+            apiFormat: "anthropic",
+            apiKeys: [{ key: "sk-a" }, { key: "sk-b" }],
+          },
+        }),
+      ),
+    ).toBe(true);
   });
 
   describe("Claude Desktop 路由判定", () => {

@@ -59,9 +59,20 @@
     "confirm": "我知道了"
   },
   "apiKeyInput": {
-    "placeholder": "请输入API Key",
-    "show": "显示API Key",
-    "hide": "隐藏API Key"
+    "placeholder": "请输入 API Key",
+    "show": "显示 API Key",
+    "hide": "隐藏 API Key",
+    "nextKeyPlaceholder": "继续输入或粘贴 API Key",
+    "multiHint": "回车换行，每行一个 API Key；粘贴多个 Key 会自动拆分。",
+    "addKey": "添加 Key",
+    "removeKey": "删除这个 Key",
+    "weightLabel": "Key 权重",
+    "weightHint": "权重留空或小于 1 时按 1 处理。",
+    "strategy": "Key 调度策略",
+    "strategyRouteHint": "随机、轮询、权重仅在本地路由/聚合模式生效",
+    "strategyRandom": "随机",
+    "strategyRoundRobin": "轮询",
+    "strategyWeighted": "权重"
   },
   "jsonEditor": {
     "mustBeObject": "配置必须是JSON对象，不能是数组或其他类型",
@@ -270,6 +281,8 @@
   },
   "notifications": {
     "providerAdded": "供应商已添加",
+    "multiKeyRoutingEnabled": "检测到多个 API Key，已自动开启本地路由",
+    "multiKeyRoutingFailed": "多个 Key 已保存，但自动开启本地路由失败：{{error}}",
     "providerSaved": "供应商配置已保存",
     "providerDeleted": "供应商删除成功",
     "switchSuccess": "切换成功！",
@@ -306,6 +319,7 @@
     "proxyReasonFullUrl": "开启了完整 URL 连接模式",
     "proxyReasonManagedOAuth": "使用托管 OAuth 登录（令牌由本地路由注入）",
     "proxyReasonRoutingRequired": "需要本地路由处理请求",
+    "proxyReasonMultipleKeys": "配置了多个 API Key，需要本地路由按策略选择 Key",
     "openAIFormatHint": "此供应商使用 OpenAI 兼容格式，需要开启路由服务才能正常使用",
     "copilotProxyHint": "GitHub Copilot 作为 Claude 供应商时始终需要本地路由；路由会根据当前模型自动选择 Chat Completions 或 Responses。",
     "openLinkFailed": "链接打开失败",

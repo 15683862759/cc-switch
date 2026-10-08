@@ -1,5 +1,6 @@
 export { useProviderCategory } from "./useProviderCategory";
 export { useApiKeyState } from "./useApiKeyState";
+export { useApiKeyPoolState } from "./useApiKeyPoolState";
 export { useBaseUrlState } from "./useBaseUrlState";
 export { useModelState } from "./useModelState";
 export { useCodexConfigState } from "./useCodexConfigState";

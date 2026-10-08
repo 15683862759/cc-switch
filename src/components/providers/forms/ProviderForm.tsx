@@ -104,6 +104,7 @@ import {
   useDraftEditorProjection,
   type EditorBaseChange,
   useApiKeyState,
+  useApiKeyPoolState,
   useBaseUrlState,
   useModelState,
   useCodexConfigState,
@@ -1040,6 +1041,28 @@ function ProviderFormFull({
     [originalHandleGeminiModelChange, updateGeminiEnvField],
   );
 
+  const {
+    entries: apiKeyEntries,
+    strategy: apiKeyStrategy,
+    handleEntriesChange: handleApiKeyEntriesChange,
+    handleStrategyChange: handleApiKeyStrategyChange,
+  } = useApiKeyPoolState({
+    initialEntries: initialData?.meta?.apiKeys,
+    initialStrategy: initialData?.meta?.apiKeyStrategy,
+    fallbackKey:
+      appId === "codex"
+        ? codexApiKey
+        : appId === "gemini"
+          ? geminiApiKey
+          : apiKey,
+    onFirstKeyChange:
+      appId === "codex"
+        ? handleCodexApiKeyChange
+        : appId === "gemini"
+          ? handleGeminiApiKeyChange
+          : handleApiKeyChange,
+  });
+
   // ── Extracted hooks: OpenCode / OMO / OpenClaw ─────────────────────
 
   const {
@@ -1937,6 +1960,14 @@ function ProviderFormFull({
         codexCopilotApiFormat !== "auto"
           ? codexCopilotApiFormat
           : undefined,
+      apiKeys:
+        apiKeyEntries.filter((entry) => entry.key.trim() !== "").length > 1
+          ? apiKeyEntries.filter((entry) => entry.key.trim() !== "")
+          : undefined,
+      apiKeyStrategy:
+        apiKeyEntries.filter((entry) => entry.key.trim() !== "").length > 1
+          ? apiKeyStrategy
+          : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -2532,6 +2563,10 @@ function ProviderFormFull({
               }
               apiKey={apiKey}
               onApiKeyChange={handleApiKeyChange}
+              apiKeys={apiKeyEntries}
+              apiKeyStrategy={apiKeyStrategy}
+              onApiKeysChange={handleApiKeyEntriesChange}
+              onApiKeyStrategyChange={handleApiKeyStrategyChange}
               category={category}
               shouldShowApiKeyLink={shouldShowClaudeApiKeyLink}
               websiteUrl={claudeWebsiteUrl}
@@ -2620,6 +2655,10 @@ function ProviderFormFull({
               onXaiAccountSelect={setSelectedXaiAccountId}
               codexApiKey={codexApiKey}
               onApiKeyChange={handleCodexApiKeyChange}
+              apiKeys={apiKeyEntries}
+              apiKeyStrategy={apiKeyStrategy}
+              onApiKeysChange={handleApiKeyEntriesChange}
+              onApiKeyStrategyChange={handleApiKeyStrategyChange}
               category={category}
               shouldShowApiKeyLink={shouldShowCodexApiKeyLink}
               websiteUrl={codexWebsiteUrl}
@@ -2695,6 +2734,10 @@ function ProviderFormFull({
               )}
               apiKey={geminiApiKey}
               onApiKeyChange={handleGeminiApiKeyChange}
+              apiKeys={apiKeyEntries}
+              apiKeyStrategy={apiKeyStrategy}
+              onApiKeysChange={handleApiKeyEntriesChange}
+              onApiKeyStrategyChange={handleApiKeyStrategyChange}
               category={category}
               shouldShowApiKeyLink={shouldShowGeminiApiKeyLink}
               websiteUrl={geminiWebsiteUrl}

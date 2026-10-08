@@ -1,6 +1,8 @@
 import { useTranslation } from "react-i18next";
 import ApiKeyInput from "../ApiKeyInput";
-import type { ProviderCategory } from "@/types";
+import { ApiKeyPoolEditor } from "./ApiKeyPoolEditor";
+import type { ApiKeyEntry, ApiKeyStrategy, ProviderCategory } from "@/types";
+import { DEFAULT_API_KEY_STRATEGY } from "@/utils/apiKeyPool";
 
 interface ApiKeySectionProps {
   id?: string;
@@ -19,11 +21,16 @@ interface ApiKeySectionProps {
   required?: boolean;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  /** 支持本地路由的供应商传入 Key 池字段后，自动切换为多 Key UI。 */
+  apiKeys?: ApiKeyEntry[];
+  apiKeyStrategy?: ApiKeyStrategy;
+  onApiKeysChange?: (entries: ApiKeyEntry[]) => void;
+  onApiKeyStrategyChange?: (strategy: ApiKeyStrategy) => void;
 }
 
 export function ApiKeySection({
-  id,
-  label,
+  id = "apiKey",
+  label = "API Key",
   value,
   onChange,
   category,
@@ -33,6 +40,10 @@ export function ApiKeySection({
   disabled,
   required = false,
   partnerPromotionKey,
+  apiKeys,
+  apiKeyStrategy,
+  onApiKeysChange,
+  onApiKeyStrategyChange,
 }: ApiKeySectionProps) {
   const { t } = useTranslation();
 
@@ -62,31 +73,51 @@ export function ApiKeySection({
         })
       : "";
 
+  const labelAside = showLink ? (
+    <a
+      href={websiteUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-caption text-fg-1 underline underline-offset-2 hover:text-fg-2"
+    >
+      {t("providerForm.getApiKey", { defaultValue: "获取 API Key" })} ↗
+    </a>
+  ) : null;
+
+  const placeholderText =
+    category === "official"
+      ? finalPlaceholder.official
+      : finalPlaceholder.thirdParty;
+
+  if (apiKeys !== undefined && onApiKeysChange) {
+    return (
+      <ApiKeyPoolEditor
+        id={id}
+        label={label}
+        entries={apiKeys}
+        strategy={apiKeyStrategy ?? DEFAULT_API_KEY_STRATEGY}
+        onChange={onApiKeysChange}
+        onStrategyChange={onApiKeyStrategyChange ?? (() => {})}
+        placeholder={placeholderText}
+        disabled={isDisabled}
+        required={isRequired}
+        labelAside={labelAside}
+        hint={promotion || undefined}
+        category={category}
+      />
+    );
+  }
+
   return (
     <ApiKeyInput
       id={id}
       label={label}
       value={value}
       onChange={onChange}
-      placeholder={
-        category === "official"
-          ? finalPlaceholder.official
-          : finalPlaceholder.thirdParty
-      }
+      placeholder={placeholderText}
       disabled={isDisabled}
       required={isRequired}
-      labelAside={
-        showLink ? (
-          <a
-            href={websiteUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-caption text-fg-1 underline underline-offset-2 hover:text-fg-2"
-          >
-            {t("providerForm.getApiKey", { defaultValue: "获取 API Key" })} ↗
-          </a>
-        ) : null
-      }
+      labelAside={labelAside}
       hint={promotion || undefined}
     />
   );

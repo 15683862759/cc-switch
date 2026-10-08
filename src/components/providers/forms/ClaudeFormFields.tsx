@@ -56,6 +56,8 @@ import type {
   ProviderCategory,
   ClaudeApiFormat,
   ClaudeApiKeyField,
+  ApiKeyEntry,
+  ApiKeyStrategy,
 } from "@/types";
 import type { ManagedAuthProvider } from "@/lib/api";
 import {
@@ -79,6 +81,10 @@ interface ClaudeFormFieldsProps {
   shouldShowApiKey: boolean;
   apiKey: string;
   onApiKeyChange: (key: string) => void;
+  apiKeys?: ApiKeyEntry[];
+  apiKeyStrategy?: ApiKeyStrategy;
+  onApiKeysChange?: (entries: ApiKeyEntry[]) => void;
+  onApiKeyStrategyChange?: (strategy: ApiKeyStrategy) => void;
   category?: ProviderCategory;
   shouldShowApiKeyLink: boolean;
   websiteUrl: string;
@@ -179,6 +185,10 @@ export function ClaudeFormFields({
   shouldShowApiKey,
   apiKey,
   onApiKeyChange,
+  apiKeys,
+  apiKeyStrategy,
+  onApiKeysChange,
+  onApiKeyStrategyChange,
   category,
   shouldShowApiKeyLink,
   websiteUrl,
@@ -715,6 +725,10 @@ export function ClaudeFormFields({
         <ApiKeySection
           value={apiKey}
           onChange={onApiKeyChange}
+          apiKeys={apiKeys}
+          apiKeyStrategy={apiKeyStrategy}
+          onApiKeysChange={onApiKeysChange}
+          onApiKeyStrategyChange={onApiKeyStrategyChange}
           category={category}
           required
           shouldShowLink={shouldShowApiKeyLink}

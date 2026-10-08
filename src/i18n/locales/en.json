@@ -61,7 +61,18 @@
   "apiKeyInput": {
     "placeholder": "Enter API Key",
     "show": "Show API Key",
-    "hide": "Hide API Key"
+    "hide": "Hide API Key",
+    "nextKeyPlaceholder": "Enter or paste another API Key",
+    "multiHint": "Press Enter for a new line, one API Key per line; pasting multiple keys splits them automatically.",
+    "addKey": "Add Key",
+    "removeKey": "Remove this Key",
+    "weightLabel": "Key weight",
+    "weightHint": "Weights below 1 or left blank are treated as 1.",
+    "strategy": "Key routing strategy",
+    "strategyRouteHint": "Random, round-robin, and weighted routing apply in local routing/aggregate mode",
+    "strategyRandom": "Random",
+    "strategyRoundRobin": "Round-robin",
+    "strategyWeighted": "Weighted"
   },
   "jsonEditor": {
     "mustBeObject": "Configuration must be a JSON object, not an array or other type",
@@ -270,6 +281,8 @@
   },
   "notifications": {
     "providerAdded": "Provider added",
+    "multiKeyRoutingEnabled": "Multiple API keys detected; local routing was enabled automatically",
+    "multiKeyRoutingFailed": "The keys were saved, but enabling local routing failed: {{error}}",
     "providerSaved": "Provider configuration saved",
     "providerDeleted": "Provider deleted successfully",
     "switchSuccess": "Switch successful!",
@@ -306,6 +319,7 @@
     "proxyReasonFullUrl": "has full URL connection mode enabled",
     "proxyReasonManagedOAuth": "uses managed OAuth login (token injected by local routing)",
     "proxyReasonRoutingRequired": "requires local routing to process requests",
+    "proxyReasonMultipleKeys": "has multiple API keys and requires local routing to select one by policy",
     "openAIFormatHint": "This provider uses OpenAI-compatible format and requires the routing service to be enabled",
     "copilotProxyHint": "GitHub Copilot as a Claude provider always requires local routing; routing automatically selects Chat Completions or Responses based on the current model.",
     "openLinkFailed": "Failed to open link",

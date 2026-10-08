@@ -61,7 +61,18 @@
   "apiKeyInput": {
     "placeholder": "API Key を入力",
     "show": "API Key を表示",
-    "hide": "API Key を隠す"
+    "hide": "API Key を隠す",
+    "nextKeyPlaceholder": "別の API Key を入力または貼り付け",
+    "multiHint": "Enter で改行し、1 行に 1 つの API Key を入力します。複数の Key を貼り付けると自動で分割されます。",
+    "addKey": "Key を追加",
+    "removeKey": "この Key を削除",
+    "weightLabel": "Key の重み",
+    "weightHint": "空欄または 1 未満の重みは 1 として扱われます。",
+    "strategy": "Key ルーティング戦略",
+    "strategyRouteHint": "ランダム、ラウンドロビン、重みはローカルルーティング/集約モードでのみ有効です",
+    "strategyRandom": "ランダム",
+    "strategyRoundRobin": "ラウンドロビン",
+    "strategyWeighted": "重み"
   },
   "jsonEditor": {
     "mustBeObject": "設定はオブジェクト形式の JSON で入力してください（配列や他の型は不可）",
@@ -270,6 +281,8 @@
   },
   "notifications": {
     "providerAdded": "プロバイダーを追加しました",
+    "multiKeyRoutingEnabled": "複数の API Key を検出したため、ローカルルーティングを自動的に有効にしました",
+    "multiKeyRoutingFailed": "Key は保存されましたが、ローカルルーティングの有効化に失敗しました：{{error}}",
     "providerSaved": "プロバイダー設定を保存しました",
     "providerDeleted": "プロバイダーを削除しました",
     "switchSuccess": "切り替え成功！",
@@ -306,6 +319,7 @@
     "proxyReasonFullUrl": "完全 URL 接続モードが有効になっており",
     "proxyReasonManagedOAuth": "マネージド OAuth ログイン（トークンはローカルルーティングが注入）を使用しており",
     "proxyReasonRoutingRequired": "リクエスト処理にローカルルーティングが必要であり",
+    "proxyReasonMultipleKeys": "複数の API Key があり、ポリシーに従って選択するにはローカルルーティングが必要です",
     "openAIFormatHint": "このプロバイダーは OpenAI 互換フォーマットを使用しており、ルーティングサービスの有効化が必要です",
     "copilotProxyHint": "GitHub Copilot を Claude プロバイダーとして使用する場合、ローカルルーティングが常に必要です。ルーティングは現在のモデルに応じて Chat Completions または Responses を自動的に選択します。",
     "openLinkFailed": "リンクを開けませんでした",
