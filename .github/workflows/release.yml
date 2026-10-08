@@ -939,7 +939,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: CC Switch ${{ github.ref_name }}
-          prerelease: true
+          # 正式标签（vX.Y.Z）发布正式版；带后缀的标签仍发布为预发布。
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## CC Switch ${{ github.ref_name }}
 

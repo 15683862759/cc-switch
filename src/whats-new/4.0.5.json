@@ -1,0 +1,26 @@
+{
+  "version": "4.0.5",
+  "items": [
+    {
+      "type": "new",
+      "zh": "供应商支持多个 API Key：粘贴自动拆行，权重模式可为每个 Key 设置权重",
+      "zh-TW": "供應商支援多個 API Key；貼上自動拆行，權重模式可逐 Key 設定",
+      "en": "Providers now support multiple API keys: paste to split rows and set per-key weights",
+      "ja": "プロバイダーが複数の API Key に対応。貼り付けで自動分割し、重みも設定可能"
+    },
+    {
+      "type": "new",
+      "zh": "多个 Key 时自动开启本地路由，可按随机、轮询、权重策略选择 Key",
+      "zh-TW": "多個 Key 時自動開啟本機路由，可依隨機、輪詢、權重策略選擇 Key",
+      "en": "Multiple keys auto-enable local routing with random, round-robin, or weighted selection",
+      "ja": "複数の Key ではローカルルーティングを自動で有効化し、ランダム・ラウンドロビン・重みで選択"
+    },
+    {
+      "type": "improve",
+      "zh": "单 Key 供应商保持原有直连行为，旧配置无需重新填写",
+      "zh-TW": "單 Key 供應商維持原有直連行為，舊設定無需重新填寫",
+      "en": "Single-key providers keep their existing direct behavior; old configurations need no re-entry",
+      "ja": "単一 Key のプロバイダーは従来の直接接続を維持し、既存設定の再入力は不要"
+    }
+  ]
+}
