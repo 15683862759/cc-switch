@@ -1,0 +1,19 @@
+{
+  "version": "4.0.6",
+  "items": [
+    {
+      "type": "new",
+      "zh": "某个 Key 被限流或失效时，自动换同一供应商的下一个 Key 重试",
+      "zh-TW": "某個 Key 被限流或失效時，自動換同供應商的下一個 Key 重試",
+      "en": "A failing key now retries with the next key of the same provider",
+      "ja": "Key が制限・失効した場合は同じプロバイダーの次の Key で再試行"
+    },
+    {
+      "type": "improve",
+      "zh": "池内 Key 全部失败后才切换供应商，坏 Key 不再拖累整家健康度",
+      "zh-TW": "池內 Key 全部失敗後才切換供應商，壞 Key 不再拖累整家健康度",
+      "en": "Provider failover waits until every key fails; one bad key no longer skews provider health",
+      "ja": "プール内の Key がすべて失敗してから切り替え、1 つの Key で健全性が偏らない"
+    }
+  ]
+}
