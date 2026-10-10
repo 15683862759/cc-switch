@@ -3,24 +3,31 @@
   "items": [
     {
       "type": "new",
-      "zh": "供应商支持多个 API Key：粘贴自动拆行，权重模式可为每个 Key 设置权重",
-      "zh-TW": "供應商支援多個 API Key；貼上自動拆行，權重模式可逐 Key 設定",
-      "en": "Providers now support multiple API keys: paste to split rows and set per-key weights",
-      "ja": "プロバイダーが複数の API Key に対応。貼り付けで自動分割し、重みも設定可能"
+      "zh": "Codex 可以用 GitHub Copilot 账号",
+      "zh-TW": "Codex 可以使用 GitHub Copilot 帳號",
+      "en": "Codex can now use a GitHub Copilot account",
+      "ja": "Codex で GitHub Copilot アカウントを使えるように"
+    },
+    {
+      "type": "fix",
+      "zh": "修复映射到 GPT 后 Claude Code 子代理总被派去 worktree",
+      "zh-TW": "修復對應到 GPT 後 Claude Code 子代理總被派去 worktree",
+      "en": "Fixed Claude Code sub-agents always sent to a worktree when mapped to GPT",
+      "ja": "GPT へのマッピング時にサブエージェントが常に worktree で動く問題を修正"
+    },
+    {
+      "type": "fix",
+      "zh": "修复 Codex 聚合模式下 GLM 等模型在 /model 里看不到",
+      "zh-TW": "修復 Codex 聚合模式下 GLM 等模型在 /model 中看不到",
+      "en": "Fixed GLM and other models missing from /model in Codex aggregation mode",
+      "ja": "Codex の集約モードで GLM などのモデルが /model に表示されない問題を修正"
     },
     {
       "type": "new",
-      "zh": "多个 Key 时自动开启本地路由，可按随机、轮询、权重策略选择 Key",
-      "zh-TW": "多個 Key 時自動開啟本機路由，可依隨機、輪詢、權重策略選擇 Key",
-      "en": "Multiple keys auto-enable local routing with random, round-robin, or weighted selection",
-      "ja": "複数の Key ではローカルルーティングを自動で有効化し、ランダム・ラウンドロビン・重みで選択"
-    },
-    {
-      "type": "improve",
-      "zh": "单 Key 供应商保持原有直连行为，旧配置无需重新填写",
-      "zh-TW": "單 Key 供應商維持原有直連行為，舊設定無需重新填寫",
-      "en": "Single-key providers keep their existing direct behavior; old configurations need no re-entry",
-      "ja": "単一 Key のプロバイダーは従来の直接接続を維持し、既存設定の再入力は不要"
+      "zh": "「全部」热力图可以往前查看完整历史",
+      "zh-TW": "「全部」熱力圖可以往前查看完整歷史",
+      "en": "The all-time heatmap can now show your full usage history",
+      "ja": "「すべて」のヒートマップで過去の全履歴を表示できるように"
     }
   ]
 }
