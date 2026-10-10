@@ -69,7 +69,7 @@
     "weightLabel": "Key weight",
     "weightHint": "Weights below 1 or left blank are treated as 1.",
     "strategy": "Key routing strategy",
-    "strategyRouteHint": "Random, round-robin, and weighted routing apply in local routing/aggregate mode",
+    "strategyRouteHint": "Random, round-robin, and weighted routing apply in local routing/aggregate mode; a failing key is retried with the next key of the same provider before failing over",
     "strategyRandom": "Random",
     "strategyRoundRobin": "Round-robin",
     "strategyWeighted": "Weighted"

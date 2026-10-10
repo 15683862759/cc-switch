@@ -69,7 +69,7 @@
     "weightLabel": "Key 權重",
     "weightHint": "權重留空或小於 1 時以 1 處理。",
     "strategy": "Key 調度策略",
-    "strategyRouteHint": "隨機、輪詢、權重僅在本地路由/聚合模式生效",
+    "strategyRouteHint": "隨機、輪詢、權重僅在本地路由/聚合模式生效；某個 Key 失敗會先換同供應商的下一個 Key，全部失敗才故障轉移",
     "strategyRandom": "隨機",
     "strategyRoundRobin": "輪詢",
     "strategyWeighted": "權重"

@@ -5,7 +5,7 @@
 use crate::app_config::AppType;
 use crate::database::Database;
 use crate::error::AppError;
-use crate::provider::{ApiKeyStrategy, Provider};
+use crate::provider::Provider;
 use crate::proxy::circuit_breaker::{AllowResult, CircuitBreaker, CircuitBreakerConfig};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -305,25 +305,30 @@ impl ProviderRouter {
         breaker
     }
 
-    /// 在注入上游认证头前选择一个供应商 Key。
+    /// 在注入上游认证头前给出一个供应商的 Key 尝试顺序。
     ///
-    /// 轮询游标按供应商独立保存；随机/权重模式使用请求序列和时间组成种子。
-    /// Key 池为空时回退到 settings_config 解析出的单 Key。
-    pub async fn select_api_key(
+    /// 首元素是本次请求应当使用的 Key（轮询按游标、随机按种子、权重按权重），
+    /// 其余元素是同一 Key 池内的候选 Key——某个 Key 遇到可重试错误时按这个顺序
+    /// 依次顶上，池内 Key 全部失败之后才回退到供应商级故障转移。
+    ///
+    /// 轮询游标按供应商独立保存，且每个请求只推进一步（与是否重试无关，避免
+    /// Key 级重试额外消耗轮询位置）；Key 池为空时返回单元素 `[fallback]`，
+    /// 调用方行为与单 Key 供应商一致。
+    pub async fn select_api_keys(
         &self,
         app_type: &str,
         provider: &Provider,
         fallback: &str,
-    ) -> String {
+    ) -> Vec<String> {
         let Some(meta) = provider.meta.as_ref() else {
-            return fallback.to_string();
+            return vec![fallback.to_string()];
         };
         if meta
             .api_keys
             .iter()
             .all(|entry| entry.key.trim().is_empty())
         {
-            return fallback.to_string();
+            return vec![fallback.to_string()];
         }
 
         let cursor_key = format!("{app_type}:{}", provider.id);
@@ -337,20 +342,30 @@ impl ProviderRouter {
         let seed =
             now.rotate_left(13) ^ request_seq.rotate_left(37) ^ stable_key_hash(&provider.id);
 
-        let selected = crate::proxy::key_pool::select_api_key(
+        let keys = crate::proxy::key_pool::ordered_api_keys(
             &meta.api_keys,
             meta.api_key_strategy,
             fallback,
-            cursor,
+            *cursor,
             seed,
         );
-        if !matches!(
-            meta.api_key_strategy.unwrap_or(ApiKeyStrategy::RoundRobin),
-            ApiKeyStrategy::RoundRobin
-        ) {
-            *cursor = cursor.wrapping_add(1);
-        }
-        selected
+        // 每个请求推进一步：随机/权重模式同样按请求序列推进，保持既有行为。
+        *cursor = cursor.wrapping_add(1);
+        keys
+    }
+
+    /// 只需要本次请求那一个 Key 时的便捷入口（等价于 [`Self::select_api_keys`] 首元素）。
+    pub async fn select_api_key(
+        &self,
+        app_type: &str,
+        provider: &Provider,
+        fallback: &str,
+    ) -> String {
+        self.select_api_keys(app_type, provider, fallback)
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| fallback.to_string())
     }
 }
 

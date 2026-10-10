@@ -9,7 +9,7 @@ use super::{
     error::*,
     failover_switch::FailoverSwitchManager,
     json_canonical::{canonicalize_value, short_value_hash},
-    log_codes::fwd as log_fwd,
+    log_codes::{fwd as log_fwd, key as log_key},
     opaque_state_rectifier::{
         detect_opaque_state_rejection, rectify_opaque_state, OpaqueStateRejection,
     },
@@ -444,6 +444,48 @@ impl RequestForwarder {
         detect_opaque_state_rejection(error, &self.rectifier_config, request, codex_third_party)
     }
 
+    /// 一个供应商本次请求的 Key 尝试顺序。
+    ///
+    /// 只有静态 Key 认证（Anthropic / Claude 中转 / Bearer / Google 等）参与 Key 池；
+    /// 托管 OAuth（Copilot / Codex OAuth / xAI / Google OAuth）用的是动态 token，
+    /// 没有「换一个 Key」这回事。返回 `None` 表示这家只有一次尝试，由 `forward`
+    /// 自己决定认证材料。
+    ///
+    /// 没有配置 Key 池的供应商直接返回 `None`，连 `extract_auth` 都不必调用，
+    /// 保证绝大多数供应商路径与引入 Key 级重试之前完全一致。
+    async fn api_key_attempts(
+        &self,
+        app_type: &AppType,
+        adapter: &dyn ProviderAdapter,
+        provider: &Provider,
+    ) -> Option<Vec<String>> {
+        let has_pool = provider.meta.as_ref().is_some_and(|meta| {
+            meta.api_keys
+                .iter()
+                .any(|entry| !entry.key.trim().is_empty())
+        });
+        if !has_pool {
+            return None;
+        }
+
+        let auth = adapter.extract_auth(provider)?;
+        if matches!(
+            auth.strategy,
+            AuthStrategy::GitHubCopilot
+                | AuthStrategy::CodexOAuth
+                | AuthStrategy::XaiOAuth
+                | AuthStrategy::GoogleOAuth
+        ) {
+            return None;
+        }
+
+        Some(
+            self.router
+                .select_api_keys(app_type.as_str(), provider, &auth.api_key)
+                .await,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<ProviderRouter>,
@@ -549,6 +591,10 @@ impl RequestForwarder {
     /// 调用方应 `continue` 让下一家 provider 继续故障转移；
     /// `Some(ForwardError)` 表示是客户端错误，没有 provider 能修复，
     /// 调用方应直接 `return` 把错误返回给客户端。
+    ///
+    /// `try_next_key` 为真表示同一供应商池内还有别的 Key 可以试：这时先不结算
+    /// 这家供应商（不记熔断器/健康度、也不消耗 HalfOpen 探测名额），只累积
+    /// `last_error`/`last_provider`，等池内 Key 都失败了再一次性结算。
     #[allow(clippy::too_many_arguments)]
     async fn handle_rectifier_retry_failure(
         &self,
@@ -557,6 +603,7 @@ impl RequestForwarder {
         app_type_str: &str,
         used_half_open_permit: bool,
         rectifier_label: &str,
+        try_next_key: bool,
         last_error: &mut Option<ProxyError>,
         last_provider: &mut Option<Provider>,
     ) -> Option<ForwardError> {
@@ -569,17 +616,26 @@ impl RequestForwarder {
         };
 
         if is_provider_error {
-            self.record_provider_failure(
-                provider,
-                app_type_str,
-                used_half_open_permit,
-                &retry_err,
-                format!(
-                    "Provider {} {rectifier_label}重试失败: {}",
-                    provider.name, retry_err
-                ),
-            )
-            .await;
+            if try_next_key {
+                log::warn!(
+                    "[{app_type_str}] [{}] Provider {} {rectifier_label}重试失败，改用同一个供应商的下一个 Key: {}",
+                    log_key::RETRY_NEXT_KEY,
+                    provider.name,
+                    summarize_proxy_error(&retry_err)
+                );
+            } else {
+                self.record_provider_failure(
+                    provider,
+                    app_type_str,
+                    used_half_open_permit,
+                    &retry_err,
+                    format!(
+                        "Provider {} {rectifier_label}重试失败: {}",
+                        provider.name, retry_err
+                    ),
+                )
+                .await;
+            }
             *last_error = Some(retry_err);
             *last_provider = Some(provider.clone());
             return None;
@@ -809,15 +865,10 @@ impl RequestForwarder {
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）；Stack 模型的请求不碰熔断器。
         let bypass_circuit_breaker = providers.len() == 1 || !self.routing_state_enabled();
 
-        // 依次尝试每个供应商
+        // 依次尝试每个供应商：同一供应商内先按 Key 池顺序换 Key 重试（某个 Key 被
+        // 限流/失效时不必立刻放弃这家），池内 Key 全部失败（或本来就只有单 Key）
+        // 才继续供应商级故障转移。
         for provider in providers.iter() {
-            // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
-            // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
-            let mut rectifier_retried = false;
-            let mut budget_rectifier_retried = false;
-            let mut media_rectifier_retried = false;
-            let mut opaque_rectifier_retried = false;
-
             // 上限检查：尊重用户在 AppProxyConfig.max_retries 上配置的「重试次数」。
             // 放在熔断器 allow 检查之前，避免在已经超限时还占用 HalfOpen 探测名额。
             if attempted_providers >= self.max_attempts {
@@ -870,260 +921,132 @@ impl RequestForwarder {
             // 新「正在尝试哪个 provider」的展示字段。
             self.note_attempt(provider).await;
 
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            let mut attempted_codex_upstream_format = None;
-            match self
-                .forward(
-                    app_type,
-                    &method,
-                    provider,
-                    endpoint,
-                    &provider_body,
-                    &headers,
-                    &extensions,
-                    adapter.as_ref(),
-                    &mut attempted_codex_upstream_format,
-                )
+            // 本次请求在这家供应商的 Key 尝试顺序：单 Key 供应商/托管 OAuth 只有
+            // 一次（`None`，由 forward 自己取认证材料），多 Key 池按调度策略排队。
+            let key_attempts: Vec<Option<String>> = match self
+                .api_key_attempts(app_type, adapter.as_ref(), provider)
                 .await
             {
-                Ok(forwarded) => {
-                    return Ok(self
-                        .finish_success(
-                            provider,
-                            app_type_str,
-                            used_half_open_permit,
-                            forwarded,
-                            attempted_codex_upstream_format,
-                        )
-                        .await);
-                }
-                Err(mut e) => {
-                    // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
-                    let provider_type = ProviderType::from_app_type_and_config(app_type, provider);
-                    let is_anthropic_provider = matches!(
-                        provider_type,
-                        Some(ProviderType::Claude | ProviderType::ClaudeAuth)
-                    );
-                    let mut signature_rectifier_non_retryable_client_error = false;
+                Some(keys) if !keys.is_empty() => keys.into_iter().map(Some).collect(),
+                _ => vec![None],
+            };
 
-                    if self.media_retry_should_trigger(
-                        adapter.name(),
-                        media_rectifier_retried,
+            for (key_index, api_key) in key_attempts.iter().enumerate() {
+                // 池内还有下一个 Key 时，本 Key 失败先换 Key，不结算这家供应商。
+                let has_next_key = key_attempts.len() > key_index + 1;
+
+                // 整流器重试标记：每个 Key 尝试独立持有，避免标记跨 Key 短路
+                // —— 本 Key 整流后被 5xx/timeout 击落时，下一个 Key 仍能走整流流程。
+                let mut rectifier_retried = false;
+                let mut budget_rectifier_retried = false;
+                let mut media_rectifier_retried = false;
+                let mut opaque_rectifier_retried = false;
+
+                // 转发请求（每个 Key 只尝试一次，Key 级重试由错误分类驱动）
+                let mut attempted_codex_upstream_format = None;
+                match self
+                    .forward(
+                        app_type,
+                        &method,
+                        provider,
+                        endpoint,
                         &provider_body,
-                        &e,
-                    ) {
-                        let mut media_body = provider_body.clone();
-                        let replaced_images =
-                            super::media_sanitizer::replace_image_blocks_with_marker(
-                                &mut media_body,
-                            );
+                        &headers,
+                        &extensions,
+                        adapter.as_ref(),
+                        api_key.as_deref(),
+                        &mut attempted_codex_upstream_format,
+                    )
+                    .await
+                {
+                    Ok(forwarded) => {
+                        return Ok(self
+                            .finish_success(
+                                provider,
+                                app_type_str,
+                                used_half_open_permit,
+                                forwarded,
+                                attempted_codex_upstream_format,
+                            )
+                            .await);
+                    }
+                    Err(mut e) => {
+                        // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
+                        let provider_type =
+                            ProviderType::from_app_type_and_config(app_type, provider);
+                        let is_anthropic_provider = matches!(
+                            provider_type,
+                            Some(ProviderType::Claude | ProviderType::ClaudeAuth)
+                        );
+                        let mut signature_rectifier_non_retryable_client_error = false;
 
-                        if replaced_images > 0 {
-                            let _ = std::mem::replace(&mut media_rectifier_retried, true);
-                            let model = media_body
-                                .get("model")
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
-                            log::info!(
+                        if self.media_retry_should_trigger(
+                            adapter.name(),
+                            media_rectifier_retried,
+                            &provider_body,
+                            &e,
+                        ) {
+                            let mut media_body = provider_body.clone();
+                            let replaced_images =
+                                super::media_sanitizer::replace_image_blocks_with_marker(
+                                    &mut media_body,
+                                );
+
+                            if replaced_images > 0 {
+                                let _ = std::mem::replace(&mut media_rectifier_retried, true);
+                                let model = media_body
+                                    .get("model")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                log::info!(
                                 "[{app_type_str}] [Media] Upstream rejected image input; retrying provider={} model={} with {replaced_images} image block(s) replaced by {}",
                                 provider.id,
                                 model,
                                 super::media_sanitizer::UNSUPPORTED_IMAGE_MARKER
                             );
 
-                            let mut media_retry_codex_upstream_format = None;
-                            match self
-                                .forward(
-                                    app_type,
-                                    &method,
-                                    provider,
-                                    endpoint,
-                                    &media_body,
-                                    &headers,
-                                    &extensions,
-                                    adapter.as_ref(),
-                                    &mut media_retry_codex_upstream_format,
-                                )
-                                .await
-                            {
-                                Ok(forwarded) => {
-                                    log::info!(
-                                        "[{app_type_str}] [Media] Unsupported-image retry succeeded"
-                                    );
-                                    return Ok(self
-                                        .finish_success(
-                                            provider,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            forwarded,
-                                            media_retry_codex_upstream_format,
-                                        )
-                                        .await);
-                                }
-                                Err(retry_err) => {
-                                    log::warn!(
-                                        "[{app_type_str}] [Media] Unsupported-image retry still failed: {retry_err}"
-                                    );
-                                    if let Some(err) = self
-                                        .handle_rectifier_retry_failure(
-                                            retry_err,
-                                            provider,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            "media 降级",
-                                            &mut last_error,
-                                            &mut last_provider,
-                                        )
-                                        .await
-                                    {
-                                        return Err(err);
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(rejection) = self.opaque_state_retry_rejection(
-                        app_type,
-                        provider,
-                        attempted_codex_upstream_format,
-                        opaque_rectifier_retried,
-                        &provider_body,
-                        &e,
-                    ) {
-                        let mut opaque_body = provider_body.clone();
-                        let rectified = rectify_opaque_state(&mut opaque_body, rejection);
-                        if rectified.applied {
-                            let _ = std::mem::replace(&mut opaque_rectifier_retried, true);
-                            log::info!(
-                                "[{app_type_str}] [RECT-020] 上游拒绝了请求里别家签发的状态，去掉 {} 个推理条目、{} 个加密片段、{} 个别家 id，换掉 {} 个压缩条目后对 provider={} 重试一次",
-                                rectified.removed_reasoning_items,
-                                rectified.replaced_encrypted_parts,
-                                rectified.removed_foreign_ids,
-                                rectified.replaced_compaction_items,
-                                provider.id
-                            );
-
-                            let mut opaque_retry_codex_upstream_format = None;
-                            match self
-                                .forward(
-                                    app_type,
-                                    &method,
-                                    provider,
-                                    endpoint,
-                                    &opaque_body,
-                                    &headers,
-                                    &extensions,
-                                    adapter.as_ref(),
-                                    &mut opaque_retry_codex_upstream_format,
-                                )
-                                .await
-                            {
-                                Ok(forwarded) => {
-                                    log::info!("[{app_type_str}] [RECT-021] 密文整流重试成功");
-                                    return Ok(self
-                                        .finish_success(
-                                            provider,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            forwarded,
-                                            opaque_retry_codex_upstream_format,
-                                        )
-                                        .await);
-                                }
-                                // 重试仍失败：按这次的错误走常规分类，和没整流过一样
-                                // 决定是否计入熔断、是否换下一家。
-                                Err(retry_err) => {
-                                    log::warn!(
-                                        "[{app_type_str}] [RECT-022] 密文整流重试仍失败: {retry_err}"
-                                    );
-                                    e = retry_err;
-                                }
-                            }
-                        }
-                    }
-
-                    if is_anthropic_provider {
-                        let error_message = extract_error_message(&e);
-                        if should_rectify_thinking_signature(
-                            error_message.as_deref(),
-                            &self.rectifier_config,
-                        ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if rectifier_retried {
-                                log::warn!("[{app_type_str}] [RECT-005] 整流器已触发过，不再重试");
-                                // 不记录熔断器，这是客户端兼容性问题
-                                return Err(self
-                                    .finish_neutral_failure(
-                                        e,
-                                        provider,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await);
-                            }
-
-                            // 首次触发：整流请求体
-                            let rectified = rectify_anthropic_request(&mut provider_body);
-
-                            // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
-                            if !rectified.applied {
-                                log::warn!(
-                                    "[{app_type_str}] [RECT-006] thinking 签名整流器触发但无可整流内容，继续检查 budget；若 budget 也未命中则按客户端错误返回"
-                                );
-                                signature_rectifier_non_retryable_client_error = true;
-                            } else {
-                                log::info!(
-                                    "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
-                                    app_type_str,
-                                    rectified.removed_thinking_blocks,
-                                    rectified.removed_redacted_thinking_blocks,
-                                    rectified.removed_signature_fields
-                                );
-
-                                // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
-                                let _ = std::mem::replace(&mut rectifier_retried, true);
-
-                                // 使用同一供应商重试（不计入熔断器）
-                                let mut signature_retry_codex_upstream_format = None;
+                                let mut media_retry_codex_upstream_format = None;
                                 match self
                                     .forward(
                                         app_type,
                                         &method,
                                         provider,
                                         endpoint,
-                                        &provider_body,
+                                        &media_body,
                                         &headers,
                                         &extensions,
                                         adapter.as_ref(),
-                                        &mut signature_retry_codex_upstream_format,
+                                        api_key.as_deref(),
+                                        &mut media_retry_codex_upstream_format,
                                     )
                                     .await
                                 {
                                     Ok(forwarded) => {
-                                        log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
+                                        log::info!(
+                                        "[{app_type_str}] [Media] Unsupported-image retry succeeded"
+                                    );
                                         return Ok(self
                                             .finish_success(
                                                 provider,
                                                 app_type_str,
                                                 used_half_open_permit,
                                                 forwarded,
-                                                signature_retry_codex_upstream_format,
+                                                media_retry_codex_upstream_format,
                                             )
                                             .await);
                                     }
                                     Err(retry_err) => {
                                         log::warn!(
-                                            "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
-                                        );
+                                        "[{app_type_str}] [Media] Unsupported-image retry still failed: {retry_err}"
+                                    );
                                         if let Some(err) = self
                                             .handle_rectifier_retry_failure(
                                                 retry_err,
                                                 provider,
                                                 app_type_str,
                                                 used_half_open_permit,
-                                                "整流",
+                                                "media 降级",
+                                                has_next_key,
                                                 &mut last_error,
                                                 &mut last_provider,
                                             )
@@ -1136,149 +1059,269 @@ impl RequestForwarder {
                                 }
                             }
                         }
-                    }
 
-                    // 检测是否需要触发 budget 整流器（仅 Claude/ClaudeAuth 供应商）
-                    if is_anthropic_provider {
-                        let error_message = extract_error_message(&e);
-                        if should_rectify_thinking_budget(
-                            error_message.as_deref(),
-                            &self.rectifier_config,
+                        if let Some(rejection) = self.opaque_state_retry_rejection(
+                            app_type,
+                            provider,
+                            attempted_codex_upstream_format,
+                            opaque_rectifier_retried,
+                            &provider_body,
+                            &e,
                         ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if budget_rectifier_retried {
-                                log::warn!(
+                            let mut opaque_body = provider_body.clone();
+                            let rectified = rectify_opaque_state(&mut opaque_body, rejection);
+                            if rectified.applied {
+                                let _ = std::mem::replace(&mut opaque_rectifier_retried, true);
+                                log::info!(
+                                "[{app_type_str}] [RECT-020] 上游拒绝了请求里别家签发的状态，去掉 {} 个推理条目、{} 个加密片段、{} 个别家 id，换掉 {} 个压缩条目后对 provider={} 重试一次",
+                                rectified.removed_reasoning_items,
+                                rectified.replaced_encrypted_parts,
+                                rectified.removed_foreign_ids,
+                                rectified.replaced_compaction_items,
+                                provider.id
+                            );
+
+                                let mut opaque_retry_codex_upstream_format = None;
+                                match self
+                                    .forward(
+                                        app_type,
+                                        &method,
+                                        provider,
+                                        endpoint,
+                                        &opaque_body,
+                                        &headers,
+                                        &extensions,
+                                        adapter.as_ref(),
+                                        api_key.as_deref(),
+                                        &mut opaque_retry_codex_upstream_format,
+                                    )
+                                    .await
+                                {
+                                    Ok(forwarded) => {
+                                        log::info!("[{app_type_str}] [RECT-021] 密文整流重试成功");
+                                        return Ok(self
+                                            .finish_success(
+                                                provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                forwarded,
+                                                opaque_retry_codex_upstream_format,
+                                            )
+                                            .await);
+                                    }
+                                    // 重试仍失败：按这次的错误走常规分类，和没整流过一样
+                                    // 决定是否计入熔断、是否换下一家。
+                                    Err(retry_err) => {
+                                        log::warn!(
+                                        "[{app_type_str}] [RECT-022] 密文整流重试仍失败: {retry_err}"
+                                    );
+                                        e = retry_err;
+                                    }
+                                }
+                            }
+                        }
+
+                        if is_anthropic_provider {
+                            let error_message = extract_error_message(&e);
+                            if should_rectify_thinking_signature(
+                                error_message.as_deref(),
+                                &self.rectifier_config,
+                            ) {
+                                // 已经重试过：直接返回错误（不可重试客户端错误）
+                                if rectifier_retried {
+                                    log::warn!(
+                                        "[{app_type_str}] [RECT-005] 整流器已触发过，不再重试"
+                                    );
+                                    // 不记录熔断器，这是客户端兼容性问题
+                                    return Err(self
+                                        .finish_neutral_failure(
+                                            e,
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await);
+                                }
+
+                                // 首次触发：整流请求体
+                                let rectified = rectify_anthropic_request(&mut provider_body);
+
+                                // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
+                                if !rectified.applied {
+                                    log::warn!(
+                                    "[{app_type_str}] [RECT-006] thinking 签名整流器触发但无可整流内容，继续检查 budget；若 budget 也未命中则按客户端错误返回"
+                                );
+                                    signature_rectifier_non_retryable_client_error = true;
+                                } else {
+                                    log::info!(
+                                    "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
+                                    app_type_str,
+                                    rectified.removed_thinking_blocks,
+                                    rectified.removed_redacted_thinking_blocks,
+                                    rectified.removed_signature_fields
+                                );
+
+                                    // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
+                                    let _ = std::mem::replace(&mut rectifier_retried, true);
+
+                                    // 使用同一供应商重试（不计入熔断器）
+                                    let mut signature_retry_codex_upstream_format = None;
+                                    match self
+                                        .forward(
+                                            app_type,
+                                            &method,
+                                            provider,
+                                            endpoint,
+                                            &provider_body,
+                                            &headers,
+                                            &extensions,
+                                            adapter.as_ref(),
+                                            api_key.as_deref(),
+                                            &mut signature_retry_codex_upstream_format,
+                                        )
+                                        .await
+                                    {
+                                        Ok(forwarded) => {
+                                            log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
+                                            return Ok(self
+                                                .finish_success(
+                                                    provider,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    forwarded,
+                                                    signature_retry_codex_upstream_format,
+                                                )
+                                                .await);
+                                        }
+                                        Err(retry_err) => {
+                                            log::warn!(
+                                            "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
+                                        );
+                                            if let Some(err) = self
+                                                .handle_rectifier_retry_failure(
+                                                    retry_err,
+                                                    provider,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    "整流",
+                                                    has_next_key,
+                                                    &mut last_error,
+                                                    &mut last_provider,
+                                                )
+                                                .await
+                                            {
+                                                return Err(err);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 检测是否需要触发 budget 整流器（仅 Claude/ClaudeAuth 供应商）
+                        if is_anthropic_provider {
+                            let error_message = extract_error_message(&e);
+                            if should_rectify_thinking_budget(
+                                error_message.as_deref(),
+                                &self.rectifier_config,
+                            ) {
+                                // 已经重试过：直接返回错误（不可重试客户端错误）
+                                if budget_rectifier_retried {
+                                    log::warn!(
                                     "[{app_type_str}] [RECT-013] budget 整流器已触发过，不再重试"
                                 );
-                                return Err(self
-                                    .finish_neutral_failure(
-                                        e,
-                                        provider,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await);
-                            }
+                                    return Err(self
+                                        .finish_neutral_failure(
+                                            e,
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await);
+                                }
 
-                            let budget_rectified = rectify_thinking_budget(&mut provider_body);
-                            if !budget_rectified.applied {
-                                log::warn!(
+                                let budget_rectified = rectify_thinking_budget(&mut provider_body);
+                                if !budget_rectified.applied {
+                                    log::warn!(
                                     "[{app_type_str}] [RECT-014] budget 整流器触发但无可整流内容，不做无意义重试"
                                 );
-                                return Err(self
-                                    .finish_neutral_failure(
-                                        e,
-                                        provider,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await);
-                            }
+                                    return Err(self
+                                        .finish_neutral_failure(
+                                            e,
+                                            provider,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await);
+                                }
 
-                            log::info!(
+                                log::info!(
                                 "[{}] [RECT-010] thinking budget 整流器触发, before={:?}, after={:?}",
                                 app_type_str,
                                 budget_rectified.before,
                                 budget_rectified.after
                             );
 
-                            let _ = std::mem::replace(&mut budget_rectifier_retried, true);
+                                let _ = std::mem::replace(&mut budget_rectifier_retried, true);
 
-                            // 使用同一供应商重试（不计入熔断器）
-                            let mut budget_retry_codex_upstream_format = None;
-                            match self
-                                .forward(
-                                    app_type,
-                                    &method,
-                                    provider,
-                                    endpoint,
-                                    &provider_body,
-                                    &headers,
-                                    &extensions,
-                                    adapter.as_ref(),
-                                    &mut budget_retry_codex_upstream_format,
-                                )
-                                .await
-                            {
-                                Ok(forwarded) => {
-                                    log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    return Ok(self
-                                        .finish_success(
-                                            provider,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            forwarded,
-                                            budget_retry_codex_upstream_format,
-                                        )
-                                        .await);
-                                }
-                                Err(retry_err) => {
-                                    log::warn!(
+                                // 使用同一供应商重试（不计入熔断器）
+                                let mut budget_retry_codex_upstream_format = None;
+                                match self
+                                    .forward(
+                                        app_type,
+                                        &method,
+                                        provider,
+                                        endpoint,
+                                        &provider_body,
+                                        &headers,
+                                        &extensions,
+                                        adapter.as_ref(),
+                                        api_key.as_deref(),
+                                        &mut budget_retry_codex_upstream_format,
+                                    )
+                                    .await
+                                {
+                                    Ok(forwarded) => {
+                                        log::info!(
+                                            "[{app_type_str}] [RECT-011] budget 整流重试成功"
+                                        );
+                                        return Ok(self
+                                            .finish_success(
+                                                provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                forwarded,
+                                                budget_retry_codex_upstream_format,
+                                            )
+                                            .await);
+                                    }
+                                    Err(retry_err) => {
+                                        log::warn!(
                                         "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
                                     );
-                                    if let Some(err) = self
-                                        .handle_rectifier_retry_failure(
-                                            retry_err,
-                                            provider,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            "budget 整流",
-                                            &mut last_error,
-                                            &mut last_provider,
-                                        )
-                                        .await
-                                    {
-                                        return Err(err);
+                                        if let Some(err) = self
+                                            .handle_rectifier_retry_failure(
+                                                retry_err,
+                                                provider,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                "budget 整流",
+                                                has_next_key,
+                                                &mut last_error,
+                                                &mut last_provider,
+                                            )
+                                            .await
+                                        {
+                                            return Err(err);
+                                        }
+                                        continue;
                                     }
-                                    continue;
                                 }
                             }
                         }
-                    }
 
-                    if signature_rectifier_non_retryable_client_error {
-                        return Err(self
-                            .finish_neutral_failure(
-                                e,
-                                provider,
-                                app_type_str,
-                                used_half_open_permit,
-                            )
-                            .await);
-                    }
-
-                    // 先分类错误，决定是否计入 provider 健康度
-                    // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
-                    //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
-                    let category = self.categorize_proxy_error(&e, provider);
-
-                    match category {
-                        ErrorCategory::Retryable => {
-                            // 可重试：真正的 provider 故障 → 记录失败并更新熔断器/DB 健康度
-                            self.record_provider_failure(
-                                provider,
-                                app_type_str,
-                                used_half_open_permit,
-                                &e,
-                                format!("Provider {} 失败: {}", provider.name, e),
-                            )
-                            .await;
-
-                            let (log_code, log_message) = build_retryable_failure_log(
-                                &provider.name,
-                                attempted_providers,
-                                providers.len(),
-                                &e,
-                            );
-                            log::warn!("[{app_type_str}] [{log_code}] {log_message}");
-
-                            last_error = Some(e);
-                            last_provider = Some(provider.clone());
-                            // 继续尝试下一个供应商
-                            continue;
-                        }
-                        ErrorCategory::NonRetryable | ErrorCategory::ClientAbort => {
-                            // 不可重试：客户端层错误或客户端断连 → 不污染健康度，仅释放 HalfOpen permit
+                        if signature_rectifier_non_retryable_client_error {
                             return Err(self
                                 .finish_neutral_failure(
                                     e,
@@ -1287,6 +1330,76 @@ impl RequestForwarder {
                                     used_half_open_permit,
                                 )
                                 .await);
+                        }
+
+                        // 先分类错误，决定是否计入 provider 健康度
+                        // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
+                        //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
+                        let category = self.categorize_proxy_error(&e, provider);
+
+                        match category {
+                            ErrorCategory::Retryable => {
+                                if has_next_key {
+                                    // 同一个供应商还有别的 Key：先换 Key，这家是否真有
+                                    // 问题等池内 Key 都失败之后再一次性结算（不记熔断器/
+                                    // 健康度，也不消耗 HalfOpen 探测名额）。
+                                    log::warn!(
+                                    "[{app_type_str}] [{}] Provider {} 的 Key #{}/{} 失败，改用下一个 Key 重试: {}",
+                                    log_key::RETRY_NEXT_KEY,
+                                    provider.name,
+                                    key_index + 1,
+                                    key_attempts.len(),
+                                    summarize_proxy_error(&e)
+                                );
+                                    last_error = Some(e);
+                                    last_provider = Some(provider.clone());
+                                    continue;
+                                }
+
+                                // 可重试，且这家没有别的 Key 可以换：真正的 provider 故障
+                                // → 记录失败并更新熔断器/DB 健康度
+                                self.record_provider_failure(
+                                    provider,
+                                    app_type_str,
+                                    used_half_open_permit,
+                                    &e,
+                                    format!("Provider {} 失败: {}", provider.name, e),
+                                )
+                                .await;
+
+                                if key_attempts.len() > 1 {
+                                    log::warn!(
+                                    "[{app_type_str}] [{}] Provider {} 的 {} 个 Key 都失败了，转供应商级故障转移",
+                                    log_key::POOL_EXHAUSTED,
+                                    provider.name,
+                                    key_attempts.len()
+                                );
+                                }
+
+                                let (log_code, log_message) = build_retryable_failure_log(
+                                    &provider.name,
+                                    attempted_providers,
+                                    providers.len(),
+                                    &e,
+                                );
+                                log::warn!("[{app_type_str}] [{log_code}] {log_message}");
+
+                                last_error = Some(e);
+                                last_provider = Some(provider.clone());
+                                // 继续尝试下一个供应商
+                                continue;
+                            }
+                            ErrorCategory::NonRetryable | ErrorCategory::ClientAbort => {
+                                // 不可重试：客户端层错误或客户端断连 → 不污染健康度，仅释放 HalfOpen permit
+                                return Err(self
+                                    .finish_neutral_failure(
+                                        e,
+                                        provider,
+                                        app_type_str,
+                                        used_half_open_permit,
+                                    )
+                                    .await);
+                            }
                         }
                     }
                 }
@@ -1325,6 +1438,9 @@ impl RequestForwarder {
     /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     /// `codex_upstream_format_out` 记下这次实际选中的 Codex 上游格式：成功时交给
     /// `finish_success`，失败时给整流判断用（Copilot 按模型逐次选协议，不能从静态配置推）。
+    ///
+    /// `api_key_override` 是调用方（Key 级重试循环）算好的 Key；`None` 表示这一次
+    /// 由本函数自己按 Key 池策略选一个（单 Key 路径的直接调用）。
     #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
@@ -1336,6 +1452,7 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
+        api_key_override: Option<&str>,
         codex_upstream_format_out: &mut Option<CodexUpstreamFormat>,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         *codex_upstream_format_out = None;
@@ -2044,6 +2161,10 @@ impl RequestForwarder {
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
             // 普通 API Key 供应商可在本地路由/聚合模式下按 Key 池策略选 Key。
             // 托管 OAuth / Copilot 使用动态 token，不参与 Key 池轮换。
+            //
+            // 重试循环会把候选 Key 显式传入（`api_key_override`），这样同一个
+            // 供应商内换 Key 重试不会重复消耗轮询游标，也只有它能对付"某个 Key
+            // 被限流/失效"这类单 Key 故障。
             if !matches!(
                 auth.strategy,
                 AuthStrategy::GitHubCopilot
@@ -2051,10 +2172,14 @@ impl RequestForwarder {
                     | AuthStrategy::XaiOAuth
                     | AuthStrategy::GoogleOAuth
             ) {
-                auth.api_key = self
-                    .router
-                    .select_api_key(app_type.as_str(), provider, &auth.api_key)
-                    .await;
+                auth.api_key = match api_key_override {
+                    Some(key) => key.to_string(),
+                    None => {
+                        self.router
+                            .select_api_key(app_type.as_str(), provider, &auth.api_key)
+                            .await
+                    }
+                };
             }
 
             // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
@@ -6130,6 +6255,7 @@ mod tests {
                     &HeaderMap::new(),
                     &Extensions::new(),
                     adapter.as_ref(),
+                    None,
                     &mut codex_upstream_format,
                 )
                 .await
@@ -7379,6 +7505,7 @@ mod tests {
     /// 锁住成功、失败、不计入熔断三种收尾对路由状态的影响。
     mod bookkeeping {
         use super::*;
+        use crate::provider::{ApiKeyEntry, ApiKeyStrategy, ProviderMeta};
         use std::collections::VecDeque;
         use tokio::sync::Mutex;
 
@@ -7954,6 +8081,266 @@ mod tests {
             assert!(requests[1]
                 .to_string()
                 .contains(crate::proxy::media_sanitizer::UNSUPPORTED_IMAGE_MARKER));
+        }
+
+        // ---- Key 池：Key 级重试 / 供应商级故障转移 ----
+
+        /// 记录 Authorization 头的假上游，用来验证每次请求实际用了哪个 Key。
+        struct AuthUpstream {
+            base_url: String,
+            /// 每次请求的 (Authorization, 请求体)，按到达顺序。
+            seen: Arc<Mutex<Vec<(String, Value)>>>,
+        }
+
+        /// 按脚本依次返回响应，并记下每次请求的 Authorization 头。
+        async fn upstream_with_auth(script: Vec<(u16, Value)>) -> AuthUpstream {
+            let script = Arc::new(Mutex::new(VecDeque::from(script)));
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let app = {
+                let seen = seen.clone();
+                axum::Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
+                    let script = script.clone();
+                    let seen = seen.clone();
+                    async move {
+                        let authorization = headers
+                            .get(http::header::AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string();
+                        seen.lock().await.push((
+                            authorization,
+                            serde_json::from_slice(&body).unwrap_or(Value::Null),
+                        ));
+                        let (status, body) = script
+                            .lock()
+                            .await
+                            .pop_front()
+                            .expect("upstream script exhausted");
+                        (
+                            StatusCode::from_u16(status).expect("status"),
+                            [(http::header::CONTENT_TYPE, "application/json")],
+                            body.to_string(),
+                        )
+                    }
+                })
+            };
+            AuthUpstream {
+                base_url: serve_upstream(app).await,
+                seen,
+            }
+        }
+
+        /// 带 Key 池的供应商：`apiKeys` 为空表示沿用 settings_config 里的单 Key。
+        fn pooled_provider(
+            id: &str,
+            base_url: &str,
+            keys: &[&str],
+            strategy: ApiKeyStrategy,
+        ) -> Provider {
+            let mut provider = test_provider_with_type(None);
+            provider.id = id.to_string();
+            provider.name = format!("Provider {id}");
+            provider.settings_config = json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": base_url,
+                    "ANTHROPIC_AUTH_TOKEN": "sk-single",
+                }
+            });
+            provider.meta = Some(ProviderMeta {
+                api_keys: keys
+                    .iter()
+                    .map(|key| ApiKeyEntry {
+                        key: (*key).to_string(),
+                        weight: 1,
+                    })
+                    .collect(),
+                api_key_strategy: Some(strategy),
+                ..Default::default()
+            });
+            provider
+        }
+
+        /// 每次请求实际带出去的 Key（Authorization 头里的 Bearer 值）。
+        fn keys_seen(seen: &[(String, Value)]) -> Vec<String> {
+            seen.iter()
+                .map(|(authorization, _)| {
+                    authorization
+                        .strip_prefix("Bearer ")
+                        .unwrap_or(authorization)
+                        .to_string()
+                })
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn key_pool_tries_the_next_key_before_failing_over() {
+            let up1 = upstream_with_auth(vec![error(429, "rate limited"), ok()]).await;
+            let up2 = upstream_with_auth(vec![ok()]).await;
+            let fwd = forwarder(2, "p1");
+
+            let result = send(
+                &fwd,
+                vec![
+                    pooled_provider(
+                        "p1",
+                        &up1.base_url,
+                        &["sk-a", "sk-b"],
+                        ApiKeyStrategy::RoundRobin,
+                    ),
+                    pooled_provider("p2", &up2.base_url, &[], ApiKeyStrategy::RoundRobin),
+                ],
+                plain_body(),
+            )
+            .await;
+
+            // 第一个 Key 被限流后，同一家换第二个 Key 就成功了，不该惊动下一家。
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p1".into()));
+            assert_eq!(
+                keys_seen(&up1.seen.lock().await),
+                vec!["sk-a".to_string(), "sk-b".to_string()]
+            );
+            assert!(up2.seen.lock().await.is_empty());
+
+            let books = books(&fwd).await;
+            assert_eq!(books.success, 1);
+            assert_eq!(books.failed, 0);
+            assert_eq!(books.failover_count, 0, "同一家换 Key 不算故障转移");
+            assert_eq!(books.in_use.as_deref(), Some("p1"));
+            // 这家没坏：只有一次成功，没有失败。
+            assert_eq!(breaker(&fwd, "p1").await, Some((1, 0)));
+        }
+
+        #[tokio::test]
+        async fn key_pool_exhaustion_falls_over_to_the_next_provider() {
+            let up1 =
+                upstream_with_auth(vec![error(429, "rate limited"), error(503, "busy")]).await;
+            let up2 = upstream_with_auth(vec![ok()]).await;
+            let fwd = forwarder(2, "p1");
+
+            let result = send(
+                &fwd,
+                vec![
+                    pooled_provider(
+                        "p1",
+                        &up1.base_url,
+                        &["sk-a", "sk-b"],
+                        ApiKeyStrategy::RoundRobin,
+                    ),
+                    pooled_provider("p2", &up2.base_url, &[], ApiKeyStrategy::RoundRobin),
+                ],
+                plain_body(),
+            )
+            .await;
+
+            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
+            // 池内两个 Key 都试过之后才换供应商。
+            assert_eq!(
+                keys_seen(&up1.seen.lock().await),
+                vec!["sk-a".to_string(), "sk-b".to_string()]
+            );
+            assert_eq!(
+                keys_seen(&up2.seen.lock().await),
+                vec!["sk-single".to_string()]
+            );
+
+            let books = books(&fwd).await;
+            assert_eq!(books.success, 1);
+            assert_eq!(books.failover_count, 1);
+            assert_eq!(books.in_use.as_deref(), Some("p2"));
+            // 池内 Key 全失败只结算一次供应商失败，不是每个 Key 记一次。
+            assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
+            assert_eq!(breaker(&fwd, "p2").await, Some((1, 0)));
+        }
+
+        #[tokio::test]
+        async fn key_pool_does_not_retry_client_errors() {
+            let up1 = upstream_with_auth(vec![error(400, "bad request"), ok()]).await;
+            let up2 = upstream_with_auth(vec![ok()]).await;
+            let fwd = forwarder(2, "p1");
+
+            let err = expect_err(
+                send(
+                    &fwd,
+                    vec![
+                        pooled_provider(
+                            "p1",
+                            &up1.base_url,
+                            &["sk-a", "sk-b"],
+                            ApiKeyStrategy::RoundRobin,
+                        ),
+                        pooled_provider("p2", &up2.base_url, &[], ApiKeyStrategy::RoundRobin),
+                    ],
+                    plain_body(),
+                )
+                .await,
+            );
+
+            // 客户端请求本身有问题：换 Key、换供应商都会被同样拒绝，立刻返回。
+            assert_eq!(err.provider.map(|p| p.id), Some("p1".into()));
+            assert_eq!(
+                keys_seen(&up1.seen.lock().await),
+                vec!["sk-a".to_string()],
+                "只用了第一个 Key"
+            );
+            assert!(up2.seen.lock().await.is_empty());
+            // 客户端错误不污染供应商健康度：这家一次结果都没记（放行检查会建熔断器，
+            // 所以可能是 (0, 0) 而不是不存在）。
+            let stats = breaker(&fwd, "p1").await;
+            assert!(
+                stats.is_none() || stats == Some((0, 0)),
+                "客户端错误不该计入熔断器: {stats:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn key_pool_rotates_the_starting_key_per_request() {
+            let up = upstream_with_auth(vec![error(429, "rate limited"), ok(), ok()]).await;
+            let fwd = forwarder(1, "p1");
+            let provider = pooled_provider(
+                "p1",
+                &up.base_url,
+                &["sk-a", "sk-b"],
+                ApiKeyStrategy::RoundRobin,
+            );
+
+            send(&fwd, vec![provider.clone()], plain_body())
+                .await
+                .map_err(|e| e.error)
+                .expect("first request");
+            send(&fwd, vec![provider], plain_body())
+                .await
+                .map_err(|e| e.error)
+                .expect("second request");
+
+            // 第一次：游标 0 → sk-a 被限流 → 换 sk-b 成功；
+            // 第二次：游标只推进一格 → 直接从 sk-b 开始。
+            assert_eq!(
+                keys_seen(&up.seen.lock().await),
+                vec!["sk-a".to_string(), "sk-b".to_string(), "sk-b".to_string()]
+            );
+        }
+
+        #[tokio::test]
+        async fn managed_oauth_providers_do_not_use_key_level_retry() {
+            let fwd = forwarder(1, "p1");
+            let adapter = get_adapter(&AppType::Claude).unwrap();
+
+            let mut copilot = test_provider_with_type(Some("github_copilot"));
+            copilot.meta.as_mut().unwrap().api_keys = vec![ApiKeyEntry {
+                key: "sk-a".to_string(),
+                weight: 1,
+            }];
+            assert!(fwd
+                .api_key_attempts(&AppType::Claude, adapter.as_ref(), &copilot)
+                .await
+                .is_none());
+
+            // 没有 Key 池的普通供应商同样不进入 Key 级重试。
+            let plain = test_provider_with_type(None);
+            assert!(fwd
+                .api_key_attempts(&AppType::Claude, adapter.as_ref(), &plain)
+                .await
+                .is_none());
         }
 
         // ---- Stack 模型：不读也不写任何路由状态 ----

@@ -4,6 +4,7 @@
 //! - CB: Circuit Breaker (熔断器)
 //! - SRV: Server (服务器)
 //! - FWD: Forwarder (转发器)
+//! - KEY: API Key pool (Key 池)
 //! - FO: Failover (故障转移)
 //! - RSP: Response (响应处理)
 //! - USG: Usage (使用量)
@@ -35,6 +36,14 @@ pub mod fwd {
     pub const PROVIDER_FAILED_RETRY: &str = "FWD-001";
     pub const ALL_PROVIDERS_FAILED: &str = "FWD-002";
     pub const SINGLE_PROVIDER_FAILED: &str = "FWD-003";
+}
+
+/// Key 池日志码
+pub mod key {
+    /// 当前 Key 可重试失败，改用同一供应商池内的下一个 Key
+    pub const RETRY_NEXT_KEY: &str = "KEY-001";
+    /// 同一供应商的 Key 池已用尽，转到供应商级故障转移
+    pub const POOL_EXHAUSTED: &str = "KEY-002";
 }
 
 /// 故障转移日志码

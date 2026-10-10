@@ -69,7 +69,7 @@
     "weightLabel": "Key の重み",
     "weightHint": "空欄または 1 未満の重みは 1 として扱われます。",
     "strategy": "Key ルーティング戦略",
-    "strategyRouteHint": "ランダム、ラウンドロビン、重みはローカルルーティング/集約モードでのみ有効です",
+    "strategyRouteHint": "ランダム、ラウンドロビン、重みはローカルルーティング/集約モードでのみ有効です。Key が失敗すると同じプロバイダーの次の Key を試し、すべて失敗した場合にフェイルオーバーします",
     "strategyRandom": "ランダム",
     "strategyRoundRobin": "ラウンドロビン",
     "strategyWeighted": "重み"
